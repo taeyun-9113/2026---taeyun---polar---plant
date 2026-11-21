@@ -1,7 +1,7 @@
 # main.py
 # 극지식물 생육 차이 분석 대시보드  ―  3탭 구조
 # tabs: 실험 소개 / 생육 결과 분석 / 실생활 대입
-# 인천송천고 실제 CSV 맞춤 · chardet 제거 · 인코딩/열 이름/폰트 완벽 대응
+# 인천송천고 실제 CSV 맞춤 · chardet 제거 · Boxplot 2분할(길이/질량) · 단위 명시
 # ★ statsmodels 없이도 추세선 표시 (numpy 수동 회귀)
 
 import io
@@ -76,6 +76,7 @@ def normalize_growth_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df[required].reset_index(drop=True)
 
+    # 생중량(g) 열이 없으면 지상부 + 지하부로 만들어 넣음
     if '생중량(g)' not in df.columns:
         df['생중량(g)'] = pd.to_numeric(df['지상부질량(g)'], errors='coerce') \
                         + pd.to_numeric(df['지하부질량(g)'], errors='coerce')
@@ -132,11 +133,7 @@ def pearson_r(x, y) -> float:
     return float(df2.iloc[:, 0].corr(df2.iloc[:, 1]))
 
 def ols_trendline(x, y):
-    """
-    numpy로 단순 선형회귀 y = a*x + b 계산.
-    Plotly의 trendline='ols' 대신 사용 → statsmodels 불필요.
-    반환: (x_min, x_max, y_min, y_max) 추세선 양 끝점
-    """
+    """numpy 단순 선형회귀 y = ax + b → 추세선 양 끝점 반환"""
     xs = pd.to_numeric(x, errors='coerce').dropna().values.astype(float)
     ys = pd.to_numeric(y, errors='coerce').dropna().values.astype(float)
     mask = ~np.isnan(xs) & ~np.isnan(ys)
@@ -158,48 +155,78 @@ def ols_trendline(x, y):
 # 5. 산점도 + 추세선 (statsmodels 없이)
 # ============================================================
 def scatter_with_trendline(df, x_col, y_col, x_label, y_label, r_val, title):
-    """
-    점 산점도 + numpy OLS 추세선(빨간 실선)을 함께 그리는 Plotly Figure.
-    trendline='ols'를 쓰지 않으므로 statsmodels 필요 없음.
-    """
     fig = go.Figure()
-
-    # 점
     fig.add_trace(go.Scatter(
         x=pd.to_numeric(df[x_col], errors='coerce'),
         y=pd.to_numeric(df[y_col], errors='coerce'),
         mode='markers',
-        marker=dict(size=7, color='steelblue', opacity=0.75, line=dict(width=0.5, color='white')),
+        marker=dict(size=7, color='steelblue', opacity=0.75,
+                    line=dict(width=0.5, color='white')),
         text=df['개체번호'],
         hoverinfo='text+x+y',
         name='개체',
     ))
-
-    # 추세선
     tl = ols_trendline(df[x_col], df[y_col])
     if tl is not None:
         xmin, xmax, ymin, ymax = tl
         fig.add_trace(go.Scatter(
-            x=[xmin, xmax],
-            y=[ymin, ymax],
+            x=[xmin, xmax], y=[ymin, ymax],
             mode='lines',
             line=dict(color='crimson', width=2.2, dash='solid'),
             name=f'추세선 (r={r_val:.3f})',
         ))
-
     fig.update_layout(
         height=400,
         margin=dict(l=52, r=24, t=52, b=48),
         template='plotly_white',
-        xaxis_title=x_label,
-        yaxis_title=y_label,
+        xaxis_title=x_label, yaxis_title=y_label,
         title=title,
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02,
+                    xanchor='right', x=1),
     )
     return fig
 
 # ============================================================
-# 6. 통계 용어 설명
+# 6. Boxplot 분할 함수
+#    지표 그룹이 다르면(길이 vs 질량) Y축 단위가 완전히 달라
+#    한 화면에 같이 그리면 질량 값이 납작하게 보이므로 분리한다.
+# ============================================================
+def draw_boxplot_group(df, cols, y_title, color_scale='Blues'):
+    """
+    cols: 표시할 열 이름 리스트
+    y_title: Y축 제목 (단위 포함)
+    """
+    box_data = df[cols].melt(var_name='지표', value_name='값')
+    # 열 이름을 보기 좋은 표시명으로
+    label_map = {
+        '잎 수(장)':        '잎 수 (장)',
+        '지상부 길이(mm)': '지상부 길이 (mm)',
+        '지하부 길이(mm)': '지하부 길이 (mm)',
+        '지상부질량(g)':   '지상부 질량 (g)',
+        '지하부질량(g)':   '지하부 질량 (g)',
+        '생중량(g)':        '생중량 (g)',
+    }
+    box_data['지표'] = box_data['지표'].map(lambda x: label_map.get(x, x))
+
+    fig = px.box(
+        box_data, x='지표', y='값', color='지표',
+        labels={'지표': '생육 지표', '값': '측정값'},
+        color_discrete_sequence=px.colors.sequential.__dict__.get(
+            color_scale, px.colors.sequential.Blues),
+    )
+    fig.update_layout(
+        height=400,
+        margin=dict(l=52, r=24, t=52, b=48),
+        template='plotly_white',
+        showlegend=False,
+        xaxis_title='생육 지표',
+        yaxis_title=y_title,
+    )
+    fig.update_traces(boxmean=True)
+    return fig
+
+# ============================================================
+# 7. 통계 용어 설명
 # ============================================================
 TERM_DESC = {
     '평균 (mean)':     '모든 값을 더해 개수로 나눈 값. 자료의 중심을 나타낸다.',
@@ -213,17 +240,18 @@ TERM_DESC = {
     '추세선':           '두 변수의 관계를 가장 잘 나타내는 직선(선형회귀선). '
                        '점들이 이 선에 가까울수록 관계가 강하다.',
     'Boxplot (상자 그림)': '상자 아랫줄·윗줄은 중간 50% 범위, 상자 안의 선은 중앙값, '
-                           '점(선 밖)은 범위를 벗어난 개체를 나타낸다.',
+                           '점(선 밖)은 범위를 벗어난 개체를 나타낸다. '
+                           '상자가 길수록 개체 간 차이가 크다.',
 }
 
 # ============================================================
-# 7. CSV 다운로드
+# 8. CSV 다운로드
 # ============================================================
 def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode('utf-8-sig')
 
 # ============================================================
-# 8. 메인
+# 9. 메인
 # ============================================================
 def main():
     st.set_page_config(
@@ -360,24 +388,24 @@ def main():
         st.markdown('## 📊 생육 데이터 핵심 요약')
         st.caption(f'총 **{len(growth_df)}개체**의 생육 측정값 기준')
 
-        s_total = stat_summary(growth_df['생중량(g)'])
+        s_total  = stat_summary(growth_df['생중량(g)'])
         s_length = stat_summary(growth_df['지상부 길이(mm)'])
         s_root   = stat_summary(growth_df['지하부 길이(mm)'])
         s_leaf   = stat_summary(growth_df['잎 수(장)'])
 
-        kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
         intro_metrics = [
-            ('전체 개체 수',     f'{len(growth_df)}개체', '', ''),
+            ('전체 개체 수',     f'{len(growth_df)}개체', ''),
             ('평균 생중량',      f'{s_total["mean"]:,.1f} g' if s_total else '–',
-                                 f'범위 {s_total["min"]:,.1f}~{s_total["max"]:,.1f} g' if s_total else '', ''),
+                                 f'범위 {s_total["min"]:,.1f} ~ {s_total["max"]:,.1f} g' if s_total else ''),
             ('평균 지상부 길이', f'{s_length["mean"]:,.1f} mm' if s_length else '–',
-                                 f'± {s_length["std"]:,.1f} mm' if s_length else '', ''),
+                                 f'± {s_length["std"]:,.1f} mm' if s_length else ''),
             ('평균 지하부 길이', f'{s_root["mean"]:,.1f} mm' if s_root else '–',
-                                 f'± {s_root["std"]:,.1f} mm' if s_root else '', ''),
+                                 f'± {s_root["std"]:,.1f} mm' if s_root else ''),
             ('평균 잎 수',       f'{s_leaf["mean"]:,.1f} 장' if s_leaf else '–',
-                                 f'± {s_leaf["std"]:,.1f} 장' if s_leaf else '', ''),
+                                 f'± {s_leaf["std"]:,.1f} 장' if s_leaf else ''),
         ]
-        for col, (label, value, delta, _) in zip([kpi1, kpi2, kpi3, kpi4, kpi5], intro_metrics):
+        kpi_cols = st.columns(len(intro_metrics))
+        for col, (label, value, delta) in zip(kpi_cols, intro_metrics):
             with col:
                 st.metric(label=label, value=value, delta=delta)
 
@@ -391,27 +419,39 @@ def main():
     # 탭 2: 생육 결과 분석
     # ────────────────────────────────────────────────────────────────
     with tab2:
-        st.markdown('## 📦 개체별 생육 지표 분포')
-        st.caption('상자 그림(Boxplot): 상자 안은 중간 50% 범위, '
-                   '가운데 선은 중앙값, 점(선 밖)은 범위를 벗어난 개체를 나타낸다. '
-                   '상자가 길수록 개체 간 차이가 크다는 뜻이다.')
-
-        box_data = growth_df.melt(id_vars='개체번호', value_vars=num_cols,
-                                  var_name='지표', value_name='값')
-        label_rev = {v: k for k, v in col_display.items()}
-        box_data['지표'] = box_data['지표'].map(lambda x: label_rev.get(x, x))
-
-        fig_box = px.box(
-            box_data, x='지표', y='값', color='지표',
-            title='개체별 생육 지표 분포 (Boxplot)',
-            labels={'지표': '생육 지표', '값': '측정값'},
+        st.markdown('## 📦 개체별 생육 지표 분포 (1) ― 길이·잎 수 계열')
+        st.caption(
+            '아래 상자 그림은 **길이(mm)와 잎 수(장)** 지표만 모았다. '
+            '값이 클수록(예: 지상부 길이 40mm 이상) 개체의 지상부·지하부가 길게 자란 것이다. '
+            '단위: 잎 수 = 장, 길이 = mm. '
+            '잎 수와 길이는 질량(g)과 척도가 달라 따로 표시한다.'
         )
-        fig_box.update_layout(
-            height=420, margin=dict(l=48, r=24, t=48, b=48),
-            template='plotly_white', showlegend=False,
+
+        length_cols = ['잎 수(장)', '지상부 길이(mm)', '지하부 길이(mm)']
+        fig_length = draw_boxplot_group(
+            growth_df, length_cols,
+            y_title='측정값 (장 / mm)',
+            color_scale='Blues',
         )
-        fig_box.update_traces(boxmean=True)
-        st.plotly_chart(fig_box, use_container_width=True)
+        st.plotly_chart(fig_length, use_container_width=True)
+
+        st.markdown('---')
+        st.markdown('## 📦 개체별 생육 지표 분포 (2) ― 질량 계열')
+        st.caption(
+            '아래 상자 그림은 **질량(g)** 지표만 모았다. '
+            '단위: 모든 값이 **g(그램)** 기준이다. '
+            '지상부 질량은 0 ~ 2.6 g, 지하부 질량은 0.2 ~ 4.2 g, '
+            '생중량(지상부+지하부)은 최대 6.3 g 정도로, 길이 지표와는 값 크기가 완전히 다르므로 '
+            '별도 그래프로 보는 것이 정확하다.'
+        )
+
+        mass_cols = ['지상부질량(g)', '지하부질량(g)', '생중량(g)']
+        fig_mass = draw_boxplot_group(
+            growth_df, mass_cols,
+            y_title='측정값 (g)',
+            color_scale='Greens',
+        )
+        st.plotly_chart(fig_mass, use_container_width=True)
 
         st.markdown('---')
         st.markdown('## 🔗 생육 지표 간 상관관계 행렬')

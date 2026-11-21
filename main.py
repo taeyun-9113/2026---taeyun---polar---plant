@@ -1,6 +1,6 @@
 # main.py
 # 극지식물 생육 차이 분석 Streamlit 대시보드
-# 인천송천고 실제 CSV 열 이름에 맞춰 작성 · chardet 의존 제거
+# 인천송천고 실제 CSV 열 이름 맞춤 · chardet 제거 · Box meanline 오류 수정
 
 import io
 import numpy as np
@@ -23,16 +23,14 @@ def read_csv_auto_encoding(binary_bytes: bytes) -> pd.DataFrame:
     raise ValueError('CSV 읽기에 실패했습니다. 파일 형식을 확인해 주세요.')
 
 # ============================================================
-# 2. 생육 CSV 열 이름 정규화  ★ 실제 데이터 기준 보강
+# 2. 생육 CSV 열 이름 정규화
+#    실제 인천송천고 생육 CSV 열:
+#      개체번호, 잎 수(장), 지상부 길이(mm), 지하부길이(mm),
+#      지하부질량(g), 지상부질량(g)
+#    ※ 생중량(g)은 없을 수 있음 → 지상부+지하부로 합산 열 추가
+#    ※ 지하부길이(mm)는 띄어쓰기 없이 붙어 올 수 있음
 # ============================================================
 def normalize_growth_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    실제 인천송천고 생육 CSV 열:
-      개체번호, 잎 수(장), 지상부 길이(mm), 지하부길이(mm),
-      지하부질량(g), 지상부질량(g)
-    ※ 생중량(g)은 없을 수 있음 → 지상부+지하부로 합산 열 추가
-    ※ 지하부길이(mm)는 띄어쓰기 없이 붙어 올 수 있음
-    """
     col_map = {
         # 개체번호
         '개체번호': '개체번호',
@@ -88,11 +86,10 @@ def normalize_growth_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df[required].reset_index(drop=True)
 
-    # 생중량(g) 열이 없으면 지상부+지하부로 만들어 넣음
+    # 생중량(g) 열이 없으면 지상부 + 지하부로 만들어 넣음
     if '생중량(g)' not in df.columns:
         df['생중량(g)'] = pd.to_numeric(df['지상부질량(g)'], errors='coerce') \
                         + pd.to_numeric(df['지하부질량(g)'], errors='coerce')
-        st.info('📌 "생중량(g)" 열이 없어 지상부질량 + 지하부질량으로 계산했습니다.')
 
     return df
 
@@ -251,17 +248,17 @@ def main():
 
     kpi_cols = st.columns(min(5, len(num_cols)))
     for i, col in enumerate(num_cols):
-        with kpi_cols[i]:
-            s = stat_summary(growth_df[col])
-            if not s:
-                continue
-            unit = col_unit.get(col, '')
-            st.metric(
-                label=col_display.get(col, col),
-                value=f'{s["mean"]:,.1f}',
-                delta=f'범위: {s["min"]:,.1f} ~ {s["max"]:,.1f} {unit}',
-                delta_help='최솟값 - 최댓값 범위',
-            )
+        _col = str(col)
+        label = col_display.get(_col, _col)
+        s = stat_summary(growth_df[col])
+        if not s:                     # 통계가 계산되지 않으면 스킵
+            continue
+        unit = col_unit.get(_col, '')
+        st.metric(
+            label=label,
+            value=f'{s["mean"]:,.1f}',
+            delta=f'범위: {s["min"]:,.1f} ~ {s["max"]:,.1f} {unit}',
+        )
 
     # ============================================================
     # 본문 ② 통계 지표 표
@@ -275,7 +272,7 @@ def main():
         if not s:
             continue
         stats_rows.append({
-            '지표':            col_display.get(col, col),
+            '지표':            col_display.get(str(col), str(col)),
             '개체 수 (n)':     f'{s["n"]}개체',
             '평균 (mean)':     f'{s["mean"]:,.1f}',
             '표준편차 (std)':  f'{s["std"]:,.1f}',
@@ -318,7 +315,8 @@ def main():
         template='plotly_white',
         showlegend=False,
     )
-    fig_box.update_traces(boxmean=True, meanline_visible=True)
+    # ★ 수정: meanline_visible=True 제거 → boxmean=True 만으로 평균선 표시
+    fig_box.update_traces(boxmean=True)
     st.plotly_chart(fig_box, use_container_width=True)
 
     # ============================================================
@@ -392,8 +390,8 @@ def main():
     detail_cols = st.columns(3)
     for i, col in enumerate(num_cols):
         with detail_cols[i % 3]:
-            label = col_display.get(col, col)
-            unit = col_unit.get(col, '')
+            label = col_display.get(str(col), str(col))
+            unit = col_unit.get(str(col), '')
             val = row[col]
             st.metric(label=label, value=f'{val:,.1f} {unit}')
 
